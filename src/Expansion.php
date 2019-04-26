@@ -206,11 +206,6 @@ class Expansion extends MacroMember {
                 consume($this->expanderExpansion())->onCommit(function(Ast $result) use ($states) {
                     $cg = $states->current();
 
-                    if ([] === $result->{'args layer_arg'} && null === $result->{'args expander_call'}) {
-                        $expander = $result->{'* expander'};
-                        $cg->this->fail(self::E_EMPTY_EXPANDER_SLICE, $expander->implode(), $expander->tokens()[0]->line());
-                    }
-
                     $mutation = $this->doExpanderCall($result, $cg);
 
                     $cg->ts->inject($mutation);
@@ -229,7 +224,7 @@ class Expansion extends MacroMember {
                     $context = $context->unwrap();
 
                     if (! is_array($context))
-                        $this->fail(
+                        $this->failRuntime(
                             "Error unpacking a non unpackable Ast node on `$(%s%s... {` at line %d with context: %s\n\n%s",
                             $result->{'* label _name'}->token(),
                             $result->optional,
@@ -307,7 +302,7 @@ class Expansion extends MacroMember {
     private function lookupAst(Ast $label, Ast $context, string $error) : Ast {
         $symbol = $label->{'* _name'}->token();
         if (null === ($result = $context->get('* ' . $symbol))->unwrap()) {
-            $this->fail(
+            $this->failRuntime(
                 $error,
                 $label->{'_complex'} ? $label->{'* _complex_name'}->implode() : $symbol,
                 $symbol->line(),
@@ -333,8 +328,20 @@ class Expansion extends MacroMember {
     private function doExpanderCall(Ast $ast, $cg) : TokenStream {
         $function = $cg->this->compileCallable('\Yay\Dsl\Expanders\\', $ast->{'* expander'}, self::E_BAD_EXPANDER);
         $expander = new \ReflectionFunction($function);
-        $delayed = function($expande) { return $expander->invoke(); };
+        $delayed = function($expander) { return $expander->invoke(); };
         if ($expander->getParameters()) {
+            if ($ast->{'* args layer_arg'}->isEmpty() && $ast->{'* args expander_call'}->isEmpty()) $this->failRuntime(
+                'Too few arguments to expander `%s` as function %s(%s) on line %d',
+                $ast->implode(),
+                $expander->getName(),
+                implode(
+                    ', ',
+                    array_map(function($p){ return preg_replace('/Parameter #\d+ \[ |<.+> | \]/', '', $p); },
+                    $expander->getParameters())
+                ),
+                $ast->{'* expander'}->tokens()[0]->line()
+            );
+
             if (($class = $expander->getParameters()[0]->getClass()) && Ast::class === $class->getName()) {
                 $delayed = function($expander, $ast, $cg) { return $this->doAstExpanderCall($expander, $ast, $cg); };
             } else {
@@ -411,11 +418,11 @@ class Expansion extends MacroMember {
                 ,
                 either
                 (
-                    chain(token('('), $this->expanderAstExpansion(), token(')')) // recursion !!!
+                    chain(token('('), optional($this->expanderAstExpansion()), token(')')) // recursion !!!
                     ,
-                    chain(token('('), layer()->as('layer_arg'), token(')'))
+                    chain(token('('), optional(layer()->as('layer_arg')), token(')'))
                     ,
-                    chain(token('{'), layer()->as('layer_arg'), token('}'))
+                    chain(token('{'), optional(layer()->as('layer_arg')), token('}'))
                 )
                 ->as('args')
             )
